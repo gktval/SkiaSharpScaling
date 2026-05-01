@@ -1,0 +1,142 @@
+@page "/image"
+@using System.IO
+@using SkiaSharp
+@using SkiaSharp.Views.Blazor
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+@rendermode @(new InteractiveWebAssemblyRenderMode(prerender: false))
+
+<h3>Image (SkiaSharp)</h3>
+
+<button class="btn btn-primary mb-3" @onclick="LoadImage">Load image into canvas</button>
+
+@if (isLoading)
+{
+    <p>Loading image…</p>
+}
+else if (_bitmap is not null)
+{
+    <p>@ms</p>
+}
+
+<p>
+    <select @bind="selectedScale">
+        <option value="1">1x</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+        <option value="8">8x</option>
+    </select>
+
+    <div>Selected scale: @selectedScale x</div>
+</p>
+
+<SKCanvasView id="map" @ref="mapCanvas" OnPaintSurface="OnPaintSurface" style="width:800px; height:600px; display:block;" />
+
+@code {
+    private SKBitmap? _bitmap;
+    private System.Diagnostics.Stopwatch _sw = new System.Diagnostics.Stopwatch();
+    private bool isLoading = false;
+    private SKCanvasView? mapCanvas;
+    private IJSObjectReference? module;
+    private string? ms;
+    private int selectedScale = 1;
+
+    private async Task LoadImage()
+    {
+        try
+        {
+            isLoading = true;
+            var uri = new Uri(new Uri(Nav.BaseUri), "image.png");
+            module = await JS.InvokeAsync<IJSObjectReference>("import", "/js/imageInterop.js");
+            byte[] bytes = await module.InvokeAsync<byte[]>("fetchImageBytes", uri);
+            using var ms = new MemoryStream(bytes);
+            _bitmap = SKBitmap.Decode(ms);
+            _bitmap = GetBitmap();
+            mapCanvas!.Invalidate();
+            isLoading = false;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error loading image: {ex}");
+            _bitmap = null;
+        }
+    }
+
+    private SKBitmap GetBitmap()
+    {
+        SKRect rect = new SKRect(-250, 122, 1012, 488);
+        if (selectedScale >= 2)
+            rect.Inflate(rect.Width / 2, rect.Height / 2);
+        if (selectedScale >= 4)
+            rect.Inflate(rect.Width / 2, rect.Height / 2);
+        if (selectedScale >= 8)
+            rect.Inflate(rect.Width / 2, rect.Height / 2);
+
+        // Gets the scaling factor for converting from geographic to pixel coordinates
+        double dx = (rect.Width) / 621.5;
+        double dy = (rect.Height) / 300;
+
+        var a = new double[6];
+        a[0] = -10778538 + 0.6;
+        a[1] = 0.6;
+        a[2] = 0d;
+        a[3] = 5999542 - 0.6;
+        a[4] = 0d;
+        a[5] = -0.6;
+
+        // gets the affine scaling factors.
+        float m11 = Convert.ToSingle(a[1] * dx);
+        float m22 = Convert.ToSingle(a[5] * -dy);
+        float m21 = Convert.ToSingle(a[2] * dx);
+        float m12 = Convert.ToSingle(a[4] * -dy);
+        double l = -10778538; // Left of top left pixel
+        double t = 5999542; // top of top left pixel
+        float xShift = (float)((l - -10778475) * dx);
+        float yShift = (float)((5999452 - t) * dy);
+
+
+        //System.Diagnostics.Debug.WriteLine($"ScaleX: {m11}, ScaleY: {m22}, Persp0: {m21}, Persp1: {m12}, TransX: {xShift}, TransY: {yShift}");
+        _sw.Start();
+        SKBitmap tempResult = new SKBitmap((int)rect.Width, (int)rect.Height);
+
+        using (SKCanvas canvas = new SKCanvas(tempResult))
+        {
+            var matrix = new SKMatrix()
+            {
+                ScaleX = m11,
+                ScaleY = m22,
+                Persp0 = m21,
+                Persp1 = m12,
+                Persp2 = 1f,
+                TransX = xShift,
+                TransY = yShift,
+                SkewX = 0f,
+                SkewY = 0f
+            };
+            canvas.SetMatrix(matrix);
+            canvas.DrawBitmap(_bitmap, new SKPoint(0, 0));
+        }
+
+        _sw.Stop();
+        ms = $"{_sw.ElapsedMilliseconds} ms";
+        _sw.Reset();
+
+        return tempResult;
+    }
+
+    private void OnPaintSurface(SKPaintSurfaceEventArgs e)
+    {
+        var canvas = e.Surface.Canvas;
+        canvas.Clear(SKColors.White);
+        if (_bitmap is null) return;
+
+        float x = 1011.5f;
+        float y = 488.5f;
+        var rect = new SKRect(-x, -y,
+            2323, 1127);
+
+        canvas.DrawBitmap(_bitmap, rect);
+    }
+}
